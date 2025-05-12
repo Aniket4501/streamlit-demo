@@ -1,1338 +1,924 @@
-"""
-# B2B2C Health Recommendation System Prototype
-# ---------------------------------------------
-# A modular health recommendation engine that combines rules-based logic,
-# similarity matching, and ML-based recommendations.
-"""
-
-# Standard libraries
-import numpy as np
 import pandas as pd
+import numpy as np
+import streamlit as st
 import matplotlib.pyplot as plt
 import seaborn as sns
-from datetime import datetime, timedelta
-import random
-import joblib
-import warnings
-warnings.filterwarnings('ignore')
-
-# ML libraries
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
-from sklearn.tree import DecisionTreeClassifier, plot_tree
+from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.impute import SimpleImputer
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+import pickle
+import json
 
-# Streamlit for UI
-import streamlit as st
+# Set page configuration
+st.set_page_config(
+    page_title="Health Recommendation Engine",
+    page_icon="🩺",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# Set random seed for reproducibility
-np.random.seed(42)
-random.seed(42)
+# ========== DATA GENERATION ==========
 
-# Visualization settings
-plt.style.use('seaborn-v0_8-whitegrid')
-sns.set_theme(style="whitegrid")
-
-# =============================================================================
-# DATA GENERATION
-# =============================================================================
-
-def generate_synthetic_data(num_users=1000):
-    """
-    Generate synthetic health and wellness data for a population of users
-    """
-    print("Generating synthetic data for", num_users, "users...")
-
-    # Companies and teams
-    companies = ['TechCorp', 'HealthNet', 'FinGroup', 'RetailGiant', 'EduSystems']
-    teams_by_company = {
-        'TechCorp': ['Engineering', 'Design', 'Product', 'Support', 'Sales'],
-        'HealthNet': ['Nursing', 'Administration', 'Research', 'Operations', 'IT'],
-        'FinGroup': ['Investment', 'Analysis', 'Compliance', 'HR', 'Tech'],
-        'RetailGiant': ['Logistics', 'Marketing', 'Store Ops', 'Digital', 'Support'],
-        'EduSystems': ['Faculty', 'Administration', 'IT', 'Research', 'Student Services']
-    }
-
-    # Generate user demographics
-    user_ids = [f"U{i:04d}" for i in range(1, num_users + 1)]
-    age = np.random.normal(40, 10, num_users).astype(int)
-    age = np.clip(age, 22, 65)  # Clip to reasonable working age range
-    gender = np.random.choice(['M', 'F', 'Other'], num_users, p=[0.48, 0.48, 0.04])
-    company = np.random.choice(companies, num_users)
-
-    # Assign teams based on company
-    team = []
-    for c in company:
-        team.append(np.random.choice(teams_by_company[c]))
-
-    # Generate HRA (Health Risk Assessment) data
-    # Scale 1-10 where 10 is healthiest behavior
-    smoking_score = np.random.choice(range(1, 11), num_users, p=[0.15, 0.05, 0.05, 0.05, 0.05, 0.05, 0.1, 0.1, 0.2, 0.2])
-    sleep_score = np.random.normal(6, 2, num_users).astype(int)
-    sleep_score = np.clip(sleep_score, 1, 10)
-    diet_score = np.random.normal(5.5, 2, num_users).astype(int)
-    diet_score = np.clip(diet_score, 1, 10)
-    exercise_score = np.random.gamma(shape=2, scale=1.5, size=num_users).astype(int)
-    exercise_score = np.clip(exercise_score, 1, 10)
-    stress_score = np.random.normal(5, 2, num_users).astype(int)
-    stress_score = np.clip(stress_score, 1, 10)
-
-    # Create correlation between health behaviors (people who exercise tend to eat better, etc.)
+def generate_dummy_data(num_users=1000, seed=42):
+    """Generate realistic dummy health data for model training"""
+    np.random.seed(seed)
+    
+    # User demographics
+    user_ids = range(1, num_users + 1)
+    ages = np.random.normal(40, 10, num_users).astype(int)
+    ages = np.clip(ages, 20, 70)  # Clip ages between 20 and 70
+    genders = np.random.choice(['Male', 'Female'], size=num_users)
+    companies = np.random.choice(['TechCorp', 'HealthInc', 'FinanceGlobal', 'RetailMart', 'EduSystems'], size=num_users)
+    teams = np.random.choice(['Engineering', 'HR', 'Finance', 'Marketing', 'Operations', 'Sales', 'Product'], size=num_users)
+    
+    # Health Risk Assessment (HRA) Data
+    smoking_scores = np.random.choice([0, 1, 2, 3, 4, 5], size=num_users, p=[0.6, 0.1, 0.1, 0.1, 0.05, 0.05])  # 0 = non-smoker, 5 = heavy
+    sleep_scores = np.random.normal(7, 1.5, num_users)  # Average hours of sleep
+    sleep_scores = np.clip(sleep_scores, 3, 10).round(1)
+    diet_scores = np.random.normal(6, 2, num_users)  # Diet quality 1-10
+    diet_scores = np.clip(diet_scores, 1, 10).round(0).astype(int)
+    exercise_scores = np.random.normal(3, 1.5, num_users)  # Days per week
+    exercise_scores = np.clip(exercise_scores, 0, 7).round(0).astype(int)
+    
+    # EMR Data
+    # BMI calculation (weight/height^2)
+    heights = np.random.normal(1.7, 0.1, num_users).round(2)  # meters
+    weights = np.random.normal(75, 15, num_users).round(1)  # kg
+    bmis = (weights / (heights ** 2)).round(1)
+    
+    # Blood pressure - systolic
+    systolic_bp = np.random.normal(120, 15, num_users).astype(int)
+    systolic_bp = np.clip(systolic_bp, 90, 200)
+    
+    # Blood pressure - diastolic
+    diastolic_bp = np.random.normal(80, 10, num_users).astype(int)
+    diastolic_bp = np.clip(diastolic_bp, 50, 120)
+    
+    # Common diagnoses
+    has_hypertension = (systolic_bp > 140) | (diastolic_bp > 90)
+    has_diabetes = np.random.choice([True, False], size=num_users, p=[0.12, 0.88])  # 12% prevalence
+    has_high_cholesterol = np.random.choice([True, False], size=num_users, p=[0.15, 0.85])  # 15% prevalence
+    
+    # Lab results
+    cholesterol = np.random.normal(190, 35, num_users).round(0).astype(int)
+    cholesterol = np.where(has_high_cholesterol, cholesterol + 40, cholesterol)
+    cholesterol = np.clip(cholesterol, 120, 300)
+    
+    glucose = np.random.normal(90, 10, num_users).round(0).astype(int)
+    glucose = np.where(has_diabetes, glucose + 40, glucose)
+    glucose = np.clip(glucose, 70, 250)
+    
+    # Health Risk Predictions (would come from a model in real life)
+    # Here we'll generate them based on our other variables
+    
+    # Diabetes risk (influenced by BMI, age, family history, activity)
+    diabetes_risk = 0.05 + (0.01 * (ages - 30) / 10) + (0.02 * (bmis - 25) / 5) + (0.1 * has_diabetes.astype(int)) - (0.01 * exercise_scores)
+    # Add some randomness
+    diabetes_risk = diabetes_risk + np.random.normal(0, 0.05, num_users)
+    diabetes_risk = np.clip(diabetes_risk, 0.01, 0.99).round(2)
+    
+    # Heart disease risk (influenced by BP, cholesterol, smoking, age, gender)
+    cvd_risk = 0.05 + (0.01 * (ages - 30) / 10) + (0.01 * (systolic_bp - 120) / 10) + (0.01 * (cholesterol - 180) / 20) + (0.02 * smoking_scores) - (0.01 * exercise_scores)
+    # Males have slightly higher base CVD risk
+    cvd_risk = np.where(genders == 'Male', cvd_risk + 0.03, cvd_risk)
+    # Add some randomness
+    cvd_risk = cvd_risk + np.random.normal(0, 0.05, num_users)
+    cvd_risk = np.clip(cvd_risk, 0.01, 0.99).round(2)
+    
+    # Hypertension risk
+    hypertension_risk = 0.05 + (0.01 * (ages - 30) / 10) + (0.02 * (systolic_bp - 120) / 10) + (0.005 * (bmis - 25)) + (0.01 * smoking_scores)
+    # Add some randomness
+    hypertension_risk = hypertension_risk + np.random.normal(0, 0.05, num_users)
+    hypertension_risk = np.clip(hypertension_risk, 0.01, 0.99).round(2)
+    
+    # App Usage Data
+    avg_daily_steps = np.random.normal(7000, 3000, num_users).round(-2).astype(int)
+    avg_daily_steps = np.clip(avg_daily_steps, 1000, 20000)
+    
+    sleep_tracking_usage = np.random.choice([0, 1, 2, 3, 4, 5, 6, 7], size=num_users, p=[0.3, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1])  # Days per week
+    water_tracking_usage = np.random.choice([0, 1, 2, 3, 4, 5, 6, 7], size=num_users, p=[0.4, 0.1, 0.1, 0.1, 0.1, 0.05, 0.05, 0.1])  # Days per week
+    
+    doctor_visits_6mo = np.random.choice([0, 1, 2, 3, 4, 5], size=num_users, p=[0.6, 0.2, 0.1, 0.05, 0.03, 0.02])
+    
+    # Challenge Participation
+    challenges_joined = np.random.choice([0, 1, 2, 3, 4, 5], size=num_users, p=[0.4, 0.3, 0.15, 0.1, 0.03, 0.02])  # Last 6 months
+    challenges_completed = np.zeros(num_users).astype(int)
+    
     for i in range(num_users):
-        if exercise_score[i] > 7:
-            diet_score[i] = min(10, diet_score[i] + np.random.randint(0, 3))
-            smoking_score[i] = min(10, smoking_score[i] + np.random.randint(0, 2))
-        if smoking_score[i] < 4:  # Heavy smokers
-            exercise_score[i] = max(1, exercise_score[i] - np.random.randint(0, 3))
-            sleep_score[i] = max(1, sleep_score[i] - np.random.randint(0, 2))
-
-    # Generate EMR (Electronic Medical Record) data
-    # BMI data that correlates with diet/exercise
-    base_bmi = np.random.normal(26, 4, num_users)
-    bmi = []
-    for i in range(num_users):
-        # Adjust BMI based on diet and exercise
-        modifier = (10 - diet_score[i])/10 + (10 - exercise_score[i])/10
-        bmi.append(max(16, min(40, base_bmi[i] + modifier * 3)))
-
-    # Blood pressure that correlates with BMI, smoking, stress
-    systolic_bp = []
-    diastolic_bp = []
-    for i in range(num_users):
-        base_systolic = 110 + (bmi[i] - 20) * 1.5
-        base_diastolic = 70 + (bmi[i] - 20) * 0.8
-
-        # Add effects of smoking and stress
-        systolic_modifier = (10 - smoking_score[i]) * 1.2 + (10 - stress_score[i]) * 0.8
-        diastolic_modifier = (10 - smoking_score[i]) * 0.6 + (10 - stress_score[i]) * 0.4
-
-        # Add random variation
-        sys_bp = int(base_systolic + systolic_modifier + np.random.normal(0, 5))
-        dia_bp = int(base_diastolic + diastolic_modifier + np.random.normal(0, 3))
-
-        systolic_bp.append(max(90, min(180, sys_bp)))
-        diastolic_bp.append(max(60, min(110, dia_bp)))
-
-    # Blood glucose and cholesterol levels (loosely correlated with diet/exercise/BMI)
-    glucose_level = []
-    cholesterol_level = []
-    for i in range(num_users):
-        base_glucose = 85 + (bmi[i] - 20) * 1.2
-        base_cholesterol = 180 + (bmi[i] - 20) * 2
-
-        # Add effects of diet
-        glucose_modifier = (10 - diet_score[i]) * 2 + (10 - exercise_score[i]) * 1
-        cholesterol_modifier = (10 - diet_score[i]) * 3 + (10 - exercise_score[i]) * 2
-
-        # Add random variation
-        glucose = int(base_glucose + glucose_modifier + np.random.normal(0, 8))
-        chol = int(base_cholesterol + cholesterol_modifier + np.random.normal(0, 15))
-
-        glucose_level.append(max(70, min(180, glucose)))
-        cholesterol_level.append(max(130, min(300, chol)))
-
-    # Generate diagnoses
-    diagnoses = []
-    for i in range(num_users):
-        user_diagnoses = []
-
-        # Hypertension
-        if systolic_bp[i] > 140 or diastolic_bp[i] > 90:
-            p_hypertension = 0.7
-            if systolic_bp[i] > 160 or diastolic_bp[i] > 100:
-                p_hypertension = 0.95
-            if random.random() < p_hypertension:
-                user_diagnoses.append('Hypertension')
-
-        # Diabetes
-        if glucose_level[i] > 125:
-            p_diabetes = 0.7
-            if glucose_level[i] > 140:
-                p_diabetes = 0.95
-            if random.random() < p_diabetes:
-                user_diagnoses.append('Diabetes')
-
-        # High Cholesterol
-        if cholesterol_level[i] > 240:
-            p_high_chol = 0.8
-            if random.random() < p_high_chol:
-                user_diagnoses.append('High Cholesterol')
-
-        # Obesity
-        if bmi[i] > 30:
-            p_obesity = 0.8
-            if bmi[i] > 35:
-                p_obesity = 0.95
-            if random.random() < p_obesity:
-                user_diagnoses.append('Obesity')
-
-        # Anxiety/Depression (related to stress)
-        if stress_score[i] < 4:
-            p_anxiety_depression = 0.4
-            if stress_score[i] < 2:
-                p_anxiety_depression = 0.7
-            if random.random() < p_anxiety_depression:
-                condition = random.choice(['Anxiety', 'Depression'])
-                user_diagnoses.append(condition)
-
-        # Sleep Disorders
-        if sleep_score[i] < 3:
-            p_sleep_disorder = 0.5
-            if random.random() < p_sleep_disorder:
-                user_diagnoses.append('Sleep Disorder')
-
-        # Heart Disease Risk
-        heart_disease_risk = 0
-        if age[i] > 50: heart_disease_risk += 1
-        if smoking_score[i] < 5: heart_disease_risk += 1
-        if cholesterol_level[i] > 240: heart_disease_risk += 1
-        if systolic_bp[i] > 140: heart_disease_risk += 1
-        if 'Diabetes' in user_diagnoses: heart_disease_risk += 1
-
-        if heart_disease_risk >= 3:
-            p_heart_disease = 0.3
-            if heart_disease_risk >= 4:
-                p_heart_disease = 0.5
-            if random.random() < p_heart_disease:
-                user_diagnoses.append('Heart Disease')
-
-        # Some people will have no diagnoses
-        if not user_diagnoses and random.random() < 0.9:
-            user_diagnoses.append('None')
-
-        diagnoses.append(','.join(user_diagnoses))
-
-    # Generate health risk predictions
-    # Simple risk scores based on various factors
-    diabetes_risk = []
-    hypertension_risk = []
-    cvd_risk = []
-
-    for i in range(num_users):
-        # Diabetes risk factors
-        d_risk = 0
-        if bmi[i] > 30: d_risk += 0.2
-        if age[i] > 45: d_risk += 0.15
-        if glucose_level[i] > 100: d_risk += 0.3
-        if 'Diabetes' in diagnoses[i]: d_risk += 0.3
-        d_risk += random.uniform(-0.05, 0.05)  # Add some noise
-        d_risk = max(0.01, min(0.99, d_risk))  # Clamp between 0.01 and 0.99
-        diabetes_risk.append(d_risk)
-
-        # Hypertension risk factors
-        h_risk = 0
-        if systolic_bp[i] > 130: h_risk += 0.2
-        if diastolic_bp[i] > 85: h_risk += 0.2
-        if age[i] > 50: h_risk += 0.1
-        if bmi[i] > 28: h_risk += 0.1
-        if smoking_score[i] < 6: h_risk += 0.1
-        if stress_score[i] < 4: h_risk += 0.1
-        if 'Hypertension' in diagnoses[i]: h_risk += 0.3
-        h_risk += random.uniform(-0.05, 0.05)  # Add some noise
-        h_risk = max(0.01, min(0.99, h_risk))  # Clamp between 0.01 and 0.99
-        hypertension_risk.append(h_risk)
-
-        # Cardiovascular disease risk factors
-        c_risk = 0
-        if age[i] > 55: c_risk += 0.15
-        if smoking_score[i] < 5: c_risk += 0.15
-        if cholesterol_level[i] > 220: c_risk += 0.15
-        if systolic_bp[i] > 140: c_risk += 0.15
-        if 'Diabetes' in diagnoses[i]: c_risk += 0.15
-        if 'Hypertension' in diagnoses[i]: c_risk += 0.15
-        if 'Heart Disease' in diagnoses[i]: c_risk += 0.3
-        c_risk += random.uniform(-0.05, 0.05)  # Add some noise
-        c_risk = max(0.01, min(0.99, c_risk))  # Clamp between 0.01 and 0.99
-        cvd_risk.append(c_risk)
-
-    # Generate prescription data based on diagnoses
-    prescriptions = []
-    for i in range(num_users):
-        user_prescriptions = []
-        user_diag = diagnoses[i].split(',')
-
-        if 'Hypertension' in user_diag:
-            bp_med = random.choice(['Lisinopril', 'Amlodipine', 'Losartan', 'Hydrochlorothiazide'])
-            user_prescriptions.append(bp_med)
-
-        if 'Diabetes' in user_diag:
-            if random.random() < 0.8:
-                d_med = random.choice(['Metformin', 'Glipizide', 'Januvia'])
-                user_prescriptions.append(d_med)
-            if glucose_level[i] > 160 and random.random() < 0.3:
-                user_prescriptions.append('Insulin')
-
-        if 'High Cholesterol' in user_diag:
-            if random.random() < 0.7:
-                chol_med = random.choice(['Atorvastatin', 'Simvastatin', 'Rosuvastatin'])
-                user_prescriptions.append(chol_med)
-
-        if 'Anxiety' in user_diag:
-            if random.random() < 0.6:
-                anx_med = random.choice(['Sertraline', 'Escitalopram', 'Alprazolam'])
-                user_prescriptions.append(anx_med)
-
-        if 'Depression' in user_diag:
-            if random.random() < 0.7:
-                dep_med = random.choice(['Fluoxetine', 'Sertraline', 'Bupropion'])
-                user_prescriptions.append(dep_med)
-
-        if 'Sleep Disorder' in user_diag:
-            if random.random() < 0.5:
-                sleep_med = random.choice(['Zolpidem', 'Eszopiclone', 'Melatonin'])
-                user_prescriptions.append(sleep_med)
-
-        if 'Heart Disease' in user_diag:
-            hd_treatments = ['Aspirin', 'Clopidogrel', 'Metoprolol', 'Atorvastatin']
-            num_hd_meds = random.choices([1, 2, 3], weights=[0.2, 0.5, 0.3])[0]
-            selected_hd_meds = random.sample(hd_treatments, num_hd_meds)
-            user_prescriptions.extend(selected_hd_meds)
-
-        prescriptions.append(','.join(user_prescriptions) if user_prescriptions else 'None')
-
-    # Generate app usage data
-    app_login_frequency = np.random.choice(['Daily', 'Weekly', 'Monthly', 'Rarely'], num_users,
-                                           p=[0.3, 0.4, 0.2, 0.1])
-
-    # Health tracking and activity data
-    avg_daily_steps = []
-    avg_sleep_hours = []
-    avg_water_intake = []
-
-    for i in range(num_users):
-        # Steps relate to exercise score
-        base_steps = 3000 + exercise_score[i] * 800
-        avg_daily_steps.append(int(base_steps + np.random.normal(0, 1000)))
-
-        # Sleep hours relate to sleep score
-        base_sleep = 5 + sleep_score[i] * 0.3
-        avg_sleep_hours.append(round(base_sleep + np.random.normal(0, 0.5), 1))
-
-        # Water intake (cups per day)
-        base_water = 2 + diet_score[i] * 0.5
-        avg_water_intake.append(round(base_water + np.random.normal(0, 1), 1))
-
-    # Doctor and pharmacy bookings
-    doctor_visits_6mo = []
-    pharmacy_orders_6mo = []
-
-    for i in range(num_users):
-        # Doctor visits based on diagnoses and age
-        base_visits = 0
-        diagnoses_list = diagnoses[i].split(',')
-
-        if 'None' not in diagnoses_list:
-            base_visits += len(diagnoses_list) * 0.5
-
-        if age[i] > 50:
-            base_visits += 0.5
-
-        # Add some randomness
-        doc_visits = int(base_visits + np.random.poisson(0.5))
-        doctor_visits_6mo.append(doc_visits)
-
-        # Pharmacy orders based on prescriptions
-        base_orders = 0
-        prescriptions_list = prescriptions[i].split(',')
-
-        if 'None' not in prescriptions_list:
-            base_orders += len(prescriptions_list) * 0.8
-
-        # Add some randomness
-        pharm_orders = int(base_orders + np.random.poisson(0.5))
-        pharmacy_orders_6mo.append(pharm_orders)
-
-    # Challenge participation
-    challenge_types = ['Steps', 'Nutrition', 'Mindfulness', 'Sleep', 'Hydration']
-    challenges_completed = []
-    preferred_challenge = []
-
-    for i in range(num_users):
-        # Higher engagement with app = more challenges
-        if app_login_frequency[i] == 'Daily':
-            num_challenges = np.random.choice([0, 1, 2, 3, 4], p=[0.05, 0.15, 0.3, 0.3, 0.2])
-        elif app_login_frequency[i] == 'Weekly':
-            num_challenges = np.random.choice([0, 1, 2, 3, 4], p=[0.1, 0.3, 0.4, 0.15, 0.05])
-        elif app_login_frequency[i] == 'Monthly':
-            num_challenges = np.random.choice([0, 1, 2], p=[0.4, 0.4, 0.2])
-        else:  # Rarely
-            num_challenges = np.random.choice([0, 1], p=[0.8, 0.2])
-
-        challenges_completed.append(num_challenges)
-
-        # Preferred challenge type
-        if exercise_score[i] >= 7:
-            pref_weights = [0.5, 0.2, 0.1, 0.1, 0.1]  # Favors steps
-        elif diet_score[i] >= 7:
-            pref_weights = [0.2, 0.5, 0.1, 0.1, 0.1]  # Favors nutrition
-        elif stress_score[i] <= 4:
-            pref_weights = [0.1, 0.1, 0.6, 0.1, 0.1]  # Favors mindfulness
-        elif sleep_score[i] <= 4:
-            pref_weights = [0.1, 0.1, 0.1, 0.6, 0.1]  # Favors sleep
-        else:
-            pref_weights = [0.2, 0.2, 0.2, 0.2, 0.2]  # Equal preference
-
-        preferred_challenge.append(np.random.choice(challenge_types, p=pref_weights))
-
-    # Generate claims data
-    had_claim_12mo = []
-    claim_amount = []
-
-    for i in range(num_users):
-        # Base probability of having a claim
-        p_claim = 0.1  # 10% baseline
-
-        # Factors that increase claim probability
-        if age[i] > 55: p_claim += 0.1
-        if 'Heart Disease' in diagnoses[i]: p_claim += 0.2
-        if 'Diabetes' in diagnoses[i]: p_claim += 0.1
-        if 'Hypertension' in diagnoses[i]: p_claim += 0.05
-        if doctor_visits_6mo[i] >= 2: p_claim += 0.1
-
-        # Cap probability
-        p_claim = min(0.8, p_claim)
-
-        # Determine if had claim
-        had_claim = np.random.random() < p_claim
-        had_claim_12mo.append(had_claim)
-
-        # Generate claim amount if had claim
-        if had_claim:
-            # Base amount
-            base_amount = 500
-
-            # Add based on conditions
-            if 'Heart Disease' in diagnoses[i]: base_amount += 5000
-            if 'Diabetes' in diagnoses[i]: base_amount += 2000
-            if 'Hypertension' in diagnoses[i]: base_amount += 1000
-
-            # Add based on age
-            if age[i] > 60: base_amount *= 1.5
-            elif age[i] > 50: base_amount *= 1.3
-            elif age[i] > 40: base_amount *= 1.1
-
-            # Add randomness (lognormal to simulate occasional large claims)
-            amount = int(base_amount * np.random.lognormal(0, 0.5))
-            claim_amount.append(amount)
-        else:
-            claim_amount.append(0)
-
-    # Create the dataframes
-
-    # Create users DataFrame
-    users_df = pd.DataFrame({
+        if challenges_joined[i] > 0:
+            # Complete between 0 and all challenges joined
+            challenges_completed[i] = np.random.randint(0, challenges_joined[i] + 1)
+    
+    # Create the user dataframe
+    user_df = pd.DataFrame({
         'user_id': user_ids,
-        'age': age,
-        'gender': gender,
-        'company': company,
-        'team': team
-    })
-
-    # Create HRA DataFrame
-    hra_df = pd.DataFrame({
-        'user_id': user_ids,
-        'smoking_score': smoking_score,
-        'sleep_score': sleep_score,
-        'diet_score': diet_score,
-        'exercise_score': exercise_score,
-        'stress_score': stress_score
-    })
-
-    # Create EMR DataFrame
-    emr_df = pd.DataFrame({
-        'user_id': user_ids,
-        'bmi': [round(b, 1) for b in bmi],
+        'age': ages,
+        'gender': genders,
+        'company': companies,
+        'team': teams,
+        'smoking_score': smoking_scores,
+        'sleep_hours': sleep_scores,
+        'diet_score': diet_scores,
+        'exercise_days_per_week': exercise_scores,
+        'height_m': heights,
+        'weight_kg': weights,
+        'bmi': bmis,
         'systolic_bp': systolic_bp,
         'diastolic_bp': diastolic_bp,
-        'glucose_level': glucose_level,
-        'cholesterol_level': cholesterol_level,
-        'diagnoses': diagnoses,
-        'prescriptions': prescriptions
-    })
-
-    # Create health risk predictions DataFrame
-    risk_df = pd.DataFrame({
-        'user_id': user_ids,
-        'diabetes_risk': [round(r, 2) for r in diabetes_risk],
-        'hypertension_risk': [round(r, 2) for r in hypertension_risk],
-        'cvd_risk': [round(r, 2) for r in cvd_risk]
-    })
-
-    # Create app usage DataFrame
-    usage_df = pd.DataFrame({
-        'user_id': user_ids,
-        'app_login_frequency': app_login_frequency,
+        'diagnosed_hypertension': has_hypertension,
+        'diagnosed_diabetes': has_diabetes,
+        'diagnosed_high_cholesterol': has_high_cholesterol,
+        'cholesterol': cholesterol,
+        'glucose': glucose,
+        'diabetes_risk': diabetes_risk,
+        'cvd_risk': cvd_risk,
+        'hypertension_risk': hypertension_risk,
         'avg_daily_steps': avg_daily_steps,
-        'avg_sleep_hours': avg_sleep_hours,
-        'avg_water_intake': avg_water_intake,
+        'sleep_tracking_days_per_week': sleep_tracking_usage,
+        'water_tracking_days_per_week': water_tracking_usage,
         'doctor_visits_6mo': doctor_visits_6mo,
-        'pharmacy_orders_6mo': pharmacy_orders_6mo,
-        'challenges_completed': challenges_completed,
-        'preferred_challenge': preferred_challenge
+        'challenges_joined_6mo': challenges_joined,
+        'challenges_completed_6mo': challenges_completed
     })
+    
+    return user_df
 
-    # Create claims DataFrame
-    claims_df = pd.DataFrame({
-        'user_id': user_ids,
-        'had_claim_12mo': had_claim_12mo,
-        'claim_amount': claim_amount
-    })
+# Generate challenges data
+def generate_challenges_data():
+    """Generate sample challenges data"""
+    challenges_data = [
+        {
+            'id': 1,
+            'name': '10,000 Steps Challenge',
+            'description': 'Achieve 10,000 steps daily for 30 days',
+            'category': 'Physical Activity',
+            'duration_days': 30,
+            'team_based': True,
+            'difficulty': 'Medium'
+        },
+        {
+            'id': 2,
+            'name': 'Meditation Minutes',
+            'description': 'Complete 10 minutes of meditation daily for 21 days',
+            'category': 'Mental Wellness',
+            'duration_days': 21,
+            'team_based': False,
+            'difficulty': 'Easy'
+        },
+        {
+            'id': 3,
+            'name': 'Hydration Hero',
+            'description': 'Drink 8 glasses of water daily for 14 days',
+            'category': 'Nutrition',
+            'duration_days': 14,
+            'team_based': False,
+            'difficulty': 'Easy'
+        },
+        {
+            'id': 4,
+            'name': 'Sleep Improvement',
+            'description': 'Get 7+ hours of sleep for 21 consecutive nights',
+            'category': 'Rest & Recovery',
+            'duration_days': 21,
+            'team_based': False,
+            'difficulty': 'Medium'
+        },
+        {
+            'id': 5,
+            'name': 'Department Step Challenge',
+            'description': 'Department with highest average step count wins',
+            'category': 'Physical Activity',
+            'duration_days': 30,
+            'team_based': True,
+            'difficulty': 'Medium'
+        },
+        {
+            'id': 6,
+            'name': 'Sugar Reduction',
+            'description': 'Reduce daily added sugar intake for 14 days',
+            'category': 'Nutrition',
+            'duration_days': 14,
+            'team_based': False,
+            'difficulty': 'Hard'
+        },
+        {
+            'id': 7,
+            'name': 'Strength Training',
+            'description': 'Complete strength training 3x per week for 4 weeks',
+            'category': 'Physical Activity',
+            'duration_days': 28,
+            'team_based': False,
+            'difficulty': 'Medium'
+        },
+        {
+            'id': 8,
+            'name': 'Team Wellness Bingo',
+            'description': 'Teams complete wellness activities to get bingo',
+            'category': 'General Wellness',
+            'duration_days': 30,
+            'team_based': True,
+            'difficulty': 'Easy'
+        },
+        {
+            'id': 9,
+            'name': 'Mindful Eating',
+            'description': 'Practice mindful eating techniques for 14 days',
+            'category': 'Nutrition',
+            'duration_days': 14,
+            'team_based': False,
+            'difficulty': 'Medium'
+        },
+        {
+            'id': 10,
+            'name': 'Cardio Challenge',
+            'description': 'Complete 150 minutes of cardio exercise weekly',
+            'category': 'Physical Activity',
+            'duration_days': 28,
+            'team_based': False,
+            'difficulty': 'Hard'
+        }
+    ]
+    
+    return pd.DataFrame(challenges_data)
 
-    print("✅ Data generation complete!")
+# Generate insurance products data
+def generate_insurance_products():
+    """Generate sample insurance products"""
+    insurance_products = [
+        {
+            'id': 1,
+            'name': 'Basic Health Plan',
+            'coverage': 'Essential medical coverage',
+            'best_for': 'Young, healthy individuals with low health risks',
+            'risk_profile': 'Low risk',
+            'monthly_premium_range': '$200-300'
+        },
+        {
+            'id': 2,
+            'name': 'Standard Health Plan',
+            'coverage': 'Comprehensive medical coverage with moderate copays',
+            'best_for': 'Individuals with moderate health risks',
+            'risk_profile': 'Moderate risk',
+            'monthly_premium_range': '$300-500'
+        },
+        {
+            'id': 3,
+            'name': 'Premium Health Plan',
+            'coverage': 'Comprehensive coverage with lower deductibles and copays',
+            'best_for': 'Families and individuals with higher health risks',
+            'risk_profile': 'High risk',
+            'monthly_premium_range': '$500-800'
+        },
+        {
+            'id': 4,
+            'name': 'Diabetes Care Plan',
+            'coverage': 'Enhanced coverage for diabetes management',
+            'best_for': 'Individuals with diabetes or elevated diabetes risk',
+            'risk_profile': 'Diabetes focus',
+            'monthly_premium_range': '$400-600'
+        },
+        {
+            'id': 5,
+            'name': 'Heart Health Plan',
+            'coverage': 'Enhanced coverage for cardiovascular conditions',
+            'best_for': 'Individuals with heart conditions or elevated CVD risk',
+            'risk_profile': 'Cardiovascular focus',
+            'monthly_premium_range': '$450-650'
+        },
+        {
+            'id': 6,
+            'name': 'Family Plus Plan',
+            'coverage': 'Comprehensive family coverage with wellness benefits',
+            'best_for': 'Families seeking preventive care and wellness benefits',
+            'risk_profile': 'Family focus',
+            'monthly_premium_range': '$600-900'
+        },
+        {
+            'id': 7,
+            'name': 'Senior Care Plan',
+            'coverage': 'Tailored coverage for seniors with chronic condition management',
+            'best_for': 'Individuals over 55 with multiple health concerns',
+            'risk_profile': 'Senior focus',
+            'monthly_premium_range': '$500-700'
+        }
+    ]
+    
+    return pd.DataFrame(insurance_products)
 
-    return users_df, hra_df, emr_df, risk_df, usage_df, claims_df
+# Generate medical recommendations data
+def generate_medical_recommendations():
+    """Generate medical recommendation templates"""
+    recommendations = [
+        {
+            'id': 1,
+            'condition': 'high_bp',
+            'recommendation': 'Schedule a doctor visit to discuss your blood pressure readings.',
+            'urgency': 'Medium',
+            'followup_days': 30
+        },
+        {
+            'id': 2,
+            'condition': 'very_high_bp',
+            'recommendation': 'Urgent: Consult with a healthcare provider about your blood pressure as soon as possible.',
+            'urgency': 'High',
+            'followup_days': 7
+        },
+        {
+            'id': 3,
+            'condition': 'high_glucose',
+            'recommendation': 'Schedule a diabetes screening with your healthcare provider.',
+            'urgency': 'Medium',
+            'followup_days': 30
+        },
+        {
+            'id': 4,
+            'condition': 'high_cholesterol',
+            'recommendation': 'Consider scheduling a lipid panel test with your doctor.',
+            'urgency': 'Medium',
+            'followup_days': 60
+        },
+        {
+            'id': 5,
+            'condition': 'high_bmi',
+            'recommendation': 'Consider consulting with a nutritionist about healthy weight management strategies.',
+            'urgency': 'Low',
+            'followup_days': 90
+        },
+        {
+            'id': 6, 
+            'condition': 'diabetes_risk',
+            'recommendation': 'Based on your profile, we recommend scheduling a diabetes screening with your doctor.',
+            'urgency': 'Medium',
+            'followup_days': 60
+        },
+        {
+            'id': 7,
+            'condition': 'cvd_risk',
+            'recommendation': 'Consider scheduling a cardiovascular health check with your doctor.',
+            'urgency': 'Medium',
+            'followup_days': 60
+        },
+        {
+            'id': 8,
+            'condition': 'general_checkup',
+            'recommendation': 'It\'s time for your annual physical examination.',
+            'urgency': 'Low',
+            'followup_days': 90
+        },
+        {
+            'id': 9,
+            'condition': 'sleep_issues',
+            'recommendation': 'Consider consulting with a sleep specialist about improving your sleep quality.',
+            'urgency': 'Low',
+            'followup_days': 90
+        },
+        {
+            'id': 10,
+            'condition': 'preventive_screening',
+            'recommendation': 'Schedule recommended preventive screenings based on your age and gender.',
+            'urgency': 'Low',
+            'followup_days': 180
+        }
+    ]
+    
+    return pd.DataFrame(recommendations)
 
-# =============================================================================
-# DATA PREPROCESSING
-# =============================================================================
-
-def create_feature_matrix(users_df, hra_df, emr_df, risk_df, usage_df):
-    """
-    Combine all data sources into a single feature matrix for analysis
-    """
-    print("Creating feature matrix...")
-
-    # Start with users dataframe
-    feature_df = users_df.copy()
-
-    # Add HRA data
-    feature_df = pd.merge(feature_df, hra_df, on='user_id')
-
-    # Add EMR numerical data
-    emr_numeric = emr_df[['user_id', 'bmi', 'systolic_bp', 'diastolic_bp',
-                          'glucose_level', 'cholesterol_level']]
-    feature_df = pd.merge(feature_df, emr_numeric, on='user_id')
-
-    # Handle diagnoses - create binary flags for common conditions
-    conditions = ['Hypertension', 'Diabetes', 'High Cholesterol',
-                  'Obesity', 'Anxiety', 'Depression', 'Sleep Disorder', 'Heart Disease']
-
-    for condition in conditions:
-        feature_df[f'has_{condition.lower().replace(" ", "_")}'] = \
-            emr_df['diagnoses'].apply(lambda x: 1 if condition in x else 0)
-
-    # Handle medications - create binary flags for medication categories
-    feature_df['on_bp_medication'] = emr_df['prescriptions'].apply(
-        lambda x: 1 if any(med in x for med in ['Lisinopril', 'Amlodipine', 'Losartan', 'Hydrochlorothiazide']) else 0)
-
-    feature_df['on_diabetes_medication'] = emr_df['prescriptions'].apply(
-        lambda x: 1 if any(med in x for med in ['Metformin', 'Glipizide', 'Januvia', 'Insulin']) else 0)
-
-    feature_df['on_cholesterol_medication'] = emr_df['prescriptions'].apply(
-        lambda x: 1 if any(med in x for med in ['Atorvastatin', 'Simvastatin', 'Rosuvastatin']) else 0)
-
-    feature_df['on_anxiety_depression_medication'] = emr_df['prescriptions'].apply(
-        lambda x: 1 if any(med in x for med in ['Sertraline', 'Escitalopram', 'Alprazolam',
-                                              'Fluoxetine', 'Bupropion']) else 0)
-
-    # Add risk scores
-    feature_df = pd.merge(feature_df, risk_df, on='user_id')
-
-    # Add app usage data
-    usage_numeric = usage_df[['user_id', 'avg_daily_steps', 'avg_sleep_hours',
-                              'avg_water_intake', 'doctor_visits_6mo',
-                              'pharmacy_orders_6mo', 'challenges_completed']]
-    feature_df = pd.merge(feature_df, usage_numeric, on='user_id')
-
-    # Add categorical app data
-    app_categorical = usage_df[['user_id', 'app_login_frequency', 'preferred_challenge']]
-    feature_df = pd.merge(feature_df, app_categorical, on='user_id')
-
-    print(f"✅ Feature matrix created with {feature_df.shape[0]} rows and {feature_df.shape[1]} columns")
-    return feature_df
-
-def preprocess_data(feature_df):
-    """
-    Prepare data for machine learning models
-    """
-    print("Preprocessing data...")
-
-    # Create a copy to avoid modifying the original
-    df = feature_df.copy()
-
-    # Define categorical and numerical columns
-    categorical_cols = ['gender', 'company', 'team', 'app_login_frequency', 'preferred_challenge']
-
-    # For numerical columns, we'll use all except user_id and categorical columns
-    numerical_cols = [col for col in df.columns if col not in categorical_cols + ['user_id']]
-
-    # Define the preprocessing for numerical and categorical data
-    numerical_transformer = Pipeline(steps=[
-        ('imputer', SimpleImputer(strategy='median')),
-        ('scaler', StandardScaler())
-    ])
-
-    categorical_transformer = Pipeline(steps=[
-        ('imputer', SimpleImputer(strategy='most_frequent')),
-        ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
-    ])
-
-    # Bundle preprocessing for numerical and categorical data
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ('num', numerical_transformer, numerical_cols),
-            ('cat', categorical_transformer, categorical_cols)
-        ])
-
-    X = df.drop('user_id', axis=1)
-
-    # Fit and transform the data
-    X_processed = preprocessor.fit_transform(X)
-
-    # Get feature names after one-hot encoding
-    feature_names = numerical_cols.copy()
-
-    # Add one-hot encoded feature names
-    ohe = preprocessor.named_transformers_['cat'].named_steps['onehot']
-    for i, col in enumerate(categorical_cols):
-        feature_names.extend([f"{col}_{cat}" for cat in ohe.categories_[i]])
-
-    print(f"✅ Preprocessing complete. Transformed data shape: {X_processed.shape}")
-
-    return X_processed, preprocessor, feature_names
-
-# =============================================================================
-# RECOMMENDATION ENGINE COMPONENTS
-# =============================================================================
+# ========== RECOMMENDATION ENGINE ==========
 
 class HealthRecommendationEngine:
-    """
-    A modular health recommendation system that provides tailored recommendations
-    based on user health profiles
-    """
-    def __init__(self, feature_df, preprocessor, feature_names):
-        self.feature_df = feature_df
-        self.preprocessor = preprocessor
-        self.feature_names = feature_names
-        self.models = {}
-
-        # Initialize all recommendation components
-        self._train_claims_model()
-        print("✅ Recommendation engine initialized")
-
-    def _train_claims_model(self):
-        """
-        Train a model to predict claims probability
-        """
-        print("Training claims prediction model...")
-
-        # Merge feature data with claims data
-        claims_df = pd.read_csv('claims_data.csv')
-        model_data = pd.merge(self.feature_df, claims_df, on='user_id')
-
-        # Prepare X and y
-        X = model_data.drop(['user_id', 'had_claim_12mo', 'claim_amount'], axis=1)
-        y = model_data['had_claim_12mo']
-
-        # Split the data
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42
-        )
-
-        # Preprocess the data
-        X_train_processed = self.preprocessor.transform(X_train)
-        X_test_processed = self.preprocessor.transform(X_test)
-
-        # Train a Decision Tree model
-        model = DecisionTreeClassifier(max_depth=5, random_state=42)
-        model.fit(X_train_processed, y_train)
-
-        # Evaluate the model
-        y_pred = model.predict(X_test_processed)
-        accuracy = accuracy_score(y_test, y_pred)
-        report = classification_report(y_test, y_pred)
-
-        print(f"Claims model accuracy: {accuracy:.2f}")
-        print("Classification report:")
-        print(report)
-
-        # Save the model
-        self.models['claims'] = model
-
-    def find_digital_twin(self, user_profile, top_n=5):
-        """
-        Find similar users based on health profile using cosine similarity
-        """
-        print("Finding digital twins...")
-
-        # Create a DataFrame with just the input user
-        user_df = pd.DataFrame([user_profile])
-
-        # Apply the same preprocessing
-        user_processed = self.preprocessor.transform(user_df.drop('user_id', axis=1))
-
-        # Get processed data for all users
-        all_users_processed = self.preprocessor.transform(self.feature_df.drop('user_id', axis=1))
-
-        # Calculate cosine similarity
-        similarities = cosine_similarity(user_processed, all_users_processed)[0]
-
-        # Get indices of top N similar users
-        top_indices = similarities.argsort()[-top_n-1:-1][::-1]  # Exclude the user itself
-
-        # Get user IDs of similar users
-        similar_users = self.feature_df.iloc[top_indices]['user_id'].tolist()
-        similarity_scores = similarities[top_indices].tolist()
-
-        # Return user IDs and their similarity scores
-        results = [{"user_id": user, "similarity": score}
-                  for user, score in zip(similar_users, similarity_scores)]
-
-        return results
-
-    def recommend_medical_steps(self, user_profile):
-        """
-        Recommend medical steps based on rules and health metrics
-        """
-        print("Generating medical recommendations...")
-
+    """Main recommendation engine class that combines rules and ML-based approaches"""
+    
+    def __init__(self):
+        """Initialize the recommendation engine components"""
+        # Load or generate necessary data
+        self.user_data = generate_dummy_data(1000)
+        self.challenges_data = generate_challenges_data()
+        self.insurance_products = generate_insurance_products()
+        self.medical_recommendations = generate_medical_recommendations()
+        
+        # Initialize models
+        self.lifestyle_challenge_model = None
+        self.insurance_recommendation_model = None
+        
+        # Train models
+        self.train_models()
+    
+    def train_models(self):
+        """Train recommendation models on dummy data"""
+        # Create training data for challenge recommendation
+        # Feature engineering: What features predict challenge completion?
+        X_challenge = self.user_data[['age', 'exercise_days_per_week', 'avg_daily_steps', 
+                                    'sleep_tracking_days_per_week', 'water_tracking_days_per_week',
+                                    'challenges_joined_6mo', 'challenges_completed_6mo']]
+        
+        # Target: Did they complete challenges? (success rate > 50%)
+        y_challenge = (self.user_data['challenges_completed_6mo'] / 
+                      (self.user_data['challenges_joined_6mo'] + 0.001) > 0.5).astype(int)
+        
+        # Simple Decision Tree model
+        self.lifestyle_challenge_model = DecisionTreeClassifier(max_depth=5, random_state=42)
+        self.lifestyle_challenge_model.fit(X_challenge, y_challenge)
+        
+        # Create training data for insurance recommendation
+        # Feature engineering: What features predict insurance needs?
+        X_insurance = self.user_data[['age', 'bmi', 'systolic_bp', 'diabetes_risk', 
+                                     'cvd_risk', 'hypertension_risk', 'diagnosed_diabetes',
+                                     'diagnosed_hypertension', 'diagnosed_high_cholesterol']]
+        
+        # Target: High risk (simplified for prototype - would be more sophisticated in production)
+        # This creates 3 categories: 0=low risk, 1=moderate risk, 2=high risk
+        y_insurance = np.zeros(len(self.user_data)).astype(int)
+        
+        # Moderate risk: at least one risk factor is elevated
+        moderate_risk = ((self.user_data['diabetes_risk'] > 0.15) | 
+                         (self.user_data['cvd_risk'] > 0.15) | 
+                         (self.user_data['hypertension_risk'] > 0.15) |
+                         (self.user_data['bmi'] > 27))
+        
+        # High risk: diagnosed condition or multiple high risk factors
+        high_risk = ((self.user_data['diagnosed_diabetes']) | 
+                     (self.user_data['diagnosed_hypertension']) | 
+                     (self.user_data['diagnosed_high_cholesterol']) |
+                     ((self.user_data['diabetes_risk'] > 0.3) & (self.user_data['cvd_risk'] > 0.3)))
+        
+        y_insurance[moderate_risk] = 1
+        y_insurance[high_risk] = 2
+        
+        self.insurance_recommendation_model = RandomForestClassifier(n_estimators=50, max_depth=5, random_state=42)
+        self.insurance_recommendation_model.fit(X_insurance, y_insurance)
+        
+    def get_medical_recommendation(self, user_profile):
+        """Rules-based medical recommendation logic"""
         recommendations = []
-        urgency = "Routine"
-
-        # Extract key health metrics
-        bmi = user_profile['bmi']
-        systolic = user_profile['systolic_bp']
-        diastolic = user_profile['diastolic_bp']
-        glucose = user_profile['glucose_level']
-        cholesterol = user_profile['cholesterol_level']
-        age = user_profile['age']
-
-        # Get diagnosis and medication flags
-        has_hypertension = user_profile.get('has_hypertension', 0)
-        has_diabetes = user_profile.get('has_diabetes', 0)
-        has_high_cholesterol = user_profile.get('has_high_cholesterol', 0)
-        has_heart_disease = user_profile.get('has_heart_disease', 0)
-
-        on_bp_meds = user_profile.get('on_bp_medication', 0)
-        on_diabetes_meds = user_profile.get('on_diabetes_medication', 0)
-        on_cholesterol_meds = user_profile.get('on_cholesterol_medication', 0)
-
-        # BP recommendations
-        if systolic >= 180 or diastolic >= 120:
-            recommendations.append("Seek immediate medical attention for severe hypertension")
-            urgency = "Immediate"
-        elif (systolic >= 160 or diastolic >= 100) and not on_bp_meds:
-            recommendations.append("Schedule doctor visit within 1 week for high blood pressure")
-            urgency = "Urgent"
-        elif (systolic >= 140 or diastolic >= 90) and not on_bp_meds:
-            recommendations.append("Schedule doctor visit for elevated blood pressure")
-            urgency = "Soon"
-        elif has_hypertension and (systolic >= 140 or diastolic >= 90) and on_bp_meds:
-            recommendations.append("Follow up with doctor to adjust blood pressure medication")
-            urgency = "Soon"
-
-        # Blood sugar recommendations
-        if glucose >= 200:
-            recommendations.append("Seek medical attention for high blood glucose")
-            urgency = max(urgency, "Urgent")
-        elif glucose >= 126 and not has_diabetes:
-            recommendations.append("Schedule doctor visit for diabetes screening")
-            urgency = max(urgency, "Soon")
-        elif has_diabetes and glucose >= 160 and on_diabetes_meds:
-            recommendations.append("Follow up with doctor to review diabetes management")
-            urgency = max(urgency, "Soon")
-
-        # Cholesterol recommendations
-        if cholesterol >= 240 and not on_cholesterol_meds:
-            recommendations.append("Schedule lipid panel and discuss cholesterol management")
-            urgency = max(urgency, "Soon")
-        elif has_high_cholesterol and cholesterol >= 200 and on_cholesterol_meds:
-            recommendations.append("Follow up on cholesterol medication effectiveness")
-
-        # BMI recommendations
-        if bmi >= 35:
-            recommendations.append("Consider weight management program for obesity")
-        elif bmi >= 30:
-            recommendations.append("Discuss weight management options with healthcare provider")
-
-        # Age-based screenings
-        if age >= 45 and user_profile['gender'] == 'M':
-            recommendations.append("Schedule routine prostate exam")
-        if age >= 40 and user_profile['gender'] == 'F':
-            recommendations.append("Schedule routine mammogram")
-        if age >= 45:
-            recommendations.append("Schedule routine colonoscopy")
-
-        # Heart disease recommendations
-        if has_heart_disease:
-            recommendations.append("Continue regular cardiology follow-ups")
-            urgency = max(urgency, "Soon")
-
-        # General recommendations
-        if not recommendations:
-            if age >= 40:
-                recommendations.append("Schedule annual physical exam")
+        
+        # Check for high blood pressure
+        if user_profile['systolic_bp'] >= 140 or user_profile['diastolic_bp'] >= 90:
+            if user_profile['systolic_bp'] >= 160 or user_profile['diastolic_bp'] >= 100:
+                recommendations.append(self.medical_recommendations[self.medical_recommendations['condition'] == 'very_high_bp'].iloc[0])
             else:
-                recommendations.append("Continue routine health maintenance")
-
+                recommendations.append(self.medical_recommendations[self.medical_recommendations['condition'] == 'high_bp'].iloc[0])
+        
+        # Check for high glucose
+        if user_profile['glucose'] >= 126:
+            recommendations.append(self.medical_recommendations[self.medical_recommendations['condition'] == 'high_glucose'].iloc[0])
+        
+        # Check for high cholesterol
+        if user_profile['cholesterol'] >= 240:
+            recommendations.append(self.medical_recommendations[self.medical_recommendations['condition'] == 'high_cholesterol'].iloc[0])
+        
+        # Check for high BMI
+        if user_profile['bmi'] >= 30:
+            recommendations.append(self.medical_recommendations[self.medical_recommendations['condition'] == 'high_bmi'].iloc[0])
+        
+        # Check for diabetes risk
+        if user_profile['diabetes_risk'] >= 0.25 and not user_profile['diagnosed_diabetes']:
+            recommendations.append(self.medical_recommendations[self.medical_recommendations['condition'] == 'diabetes_risk'].iloc[0])
+        
+        # Check for cardiovascular risk
+        if user_profile['cvd_risk'] >= 0.25:
+            recommendations.append(self.medical_recommendations[self.medical_recommendations['condition'] == 'cvd_risk'].iloc[0])
+        
+        # Check for sleep issues
+        if user_profile['sleep_hours'] < 6:
+            recommendations.append(self.medical_recommendations[self.medical_recommendations['condition'] == 'sleep_issues'].iloc[0])
+        
+        # If no specific recommendations, suggest general checkup
+        if len(recommendations) == 0:
+            recommendations.append(self.medical_recommendations[self.medical_recommendations['condition'] == 'general_checkup'].iloc[0])
+        
+        # Sort by urgency
+        urgency_map = {'High': 0, 'Medium': 1, 'Low': 2}
+        recommendations.sort(key=lambda x: urgency_map[x['urgency']])
+        
+        # Return the top recommendation (most urgent)
+        return recommendations[0]
+    
+    def get_insurance_recommendation(self, user_profile):
+        """ML-based insurance recommendation logic"""
+        # Extract features for prediction
+        features = np.array([[
+            user_profile['age'],
+            user_profile['bmi'],
+            user_profile['systolic_bp'],
+            user_profile['diabetes_risk'],
+            user_profile['cvd_risk'],
+            user_profile['hypertension_risk'],
+            user_profile['diagnosed_diabetes'],
+            user_profile['diagnosed_hypertension'],
+            user_profile['diagnosed_high_cholesterol']
+        ]])
+        
+        # Predict insurance category
+        insurance_category = self.insurance_recommendation_model.predict(features)[0]
+        
+        # Map category to specific product recommendations
+        if insurance_category == 0:  # Low risk
+            return self.insurance_products[self.insurance_products['id'] == 1].iloc[0]
+        elif insurance_category == 1:  # Moderate risk
+            # Check specific risk factors for targeted plans
+            if user_profile['diabetes_risk'] > 0.2:
+                return self.insurance_products[self.insurance_products['id'] == 4].iloc[0]  # Diabetes Care Plan
+            elif user_profile['cvd_risk'] > 0.2:
+                return self.insurance_products[self.insurance_products['id'] == 5].iloc[0]  # Heart Health Plan
+            else:
+                return self.insurance_products[self.insurance_products['id'] == 2].iloc[0]  # Standard Health Plan
+        else:  # High risk
+            if user_profile['age'] > 55:
+                return self.insurance_products[self.insurance_products['id'] == 7].iloc[0]  # Senior Care Plan
+            else:
+                return self.insurance_products[self.insurance_products['id'] == 3].iloc[0]  # Premium Health Plan
+    
+    def get_lifestyle_recommendation(self, user_profile):
+        """ML-based lifestyle/challenge recommendation logic"""
+        # Create feature array for prediction
+        features = np.array([[
+            user_profile['age'],
+            user_profile['exercise_days_per_week'],
+            user_profile['avg_daily_steps'],
+            user_profile['sleep_tracking_days_per_week'],
+            user_profile['water_tracking_days_per_week'],
+            user_profile['challenges_joined_6mo'],
+            user_profile['challenges_completed_6mo']
+        ]])
+        
+        # Predict likelihood of completing challenges
+        challenge_completion_likelihood = self.lifestyle_challenge_model.predict_proba(features)[0][1]
+        
+        # Recommend based on health metrics and activity level
+        recommended_challenges = []
+        
+        # Physical activity recommendations
+        if user_profile['exercise_days_per_week'] < 3 or user_profile['avg_daily_steps'] < 7000:
+            if challenge_completion_likelihood > 0.6:  # Likely to complete more difficult challenges
+                recommended_challenges.append(self.challenges_data[self.challenges_data['id'] == 10].iloc[0])  # Cardio Challenge
+            else:
+                recommended_challenges.append(self.challenges_data[self.challenges_data['id'] == 1].iloc[0])  # 10,000 Steps
+        
+        # Mental wellness
+        if user_profile['sleep_hours'] < 7:
+            recommended_challenges.append(self.challenges_data[self.challenges_data['id'] == 4].iloc[0])  # Sleep Improvement
+        
+        # Nutrition recommendations
+        if user_profile['diet_score'] < 6:
+            recommended_challenges.append(self.challenges_data[self.challenges_data['id'] == 9].iloc[0])  # Mindful Eating
+        
+        # Water tracking
+        if user_profile['water_tracking_days_per_week'] < 3:
+            recommended_challenges.append(self.challenges_data[self.challenges_data['id'] == 3].iloc[0])  # Hydration Hero
+        
+        # Team challenges based on previous participation
+        if user_profile['challenges_completed_6mo'] > 0 and challenge_completion_likelihood > 0.5:
+            if user_profile['team'] is not None:
+                recommended_challenges.append(self.challenges_data[self.challenges_data['id'] == 5].iloc[0])  # Department Step Challenge
+        
+        # If no specific recommendations, suggest general wellness challenge
+        if len(recommended_challenges) == 0:
+            recommended_challenges.append(self.challenges_data[self.challenges_data['id'] == 8].iloc[0])  # Team Wellness Bingo
+        
+        # Return the top recommendation
+        # Could be enhanced with ranking logic in a full implementation
+        return recommended_challenges[0]
+    
+    def get_all_recommendations(self, user_profile):
+        """Get all recommendation types for a given user profile"""
+        medical_rec = self.get_medical_recommendation(user_profile)
+        insurance_rec = self.get_insurance_recommendation(user_profile)
+        lifestyle_rec = self.get_lifestyle_recommendation(user_profile)
+        
         return {
-            "recommendations": recommendations,
-            "urgency": urgency
+            'medical_recommendation': medical_rec,
+            'insurance_recommendation': insurance_rec,
+            'lifestyle_recommendation': lifestyle_rec
         }
 
-    def recommend_insurance_products(self, user_profile):
-        """
-        Recommend insurance products based on health risks
-        """
-        print("Recommending insurance products...")
+# ========== STREAMLIT UI ==========
 
-        # Extract key risk factors and demographics
-        age = user_profile['age']
-        diabetes_risk = user_profile['diabetes_risk']
-        hypertension_risk = user_profile['hypertension_risk']
-        cvd_risk = user_profile['cvd_risk']
-
-        has_hypertension = user_profile.get('has_hypertension', 0)
-        has_diabetes = user_profile.get('has_diabetes', 0)
-        has_high_cholesterol = user_profile.get('has_high_cholesterol', 0)
-        has_heart_disease = user_profile.get('has_heart_disease', 0)
-
-        # Calculate overall risk level (simple average of the three risks)
-        overall_risk = (diabetes_risk + hypertension_risk + cvd_risk) / 3
-
-        # Base recommendations
-        core_recommendation = "Standard Health Plan"
-        supplemental_recommendations = []
-
-        # Logic for core plan recommendation
-        if overall_risk > 0.7 or has_heart_disease:
-            core_recommendation = "Premium Health Plan"
-        elif overall_risk > 0.5 or has_diabetes or has_hypertension:
-            core_recommendation = "Enhanced Health Plan"
-        elif overall_risk > 0.3:
-            core_recommendation = "Plus Health Plan"
-
-        # Logic for supplemental recommendations
-        if diabetes_risk > 0.5 or has_diabetes:
-            supplemental_recommendations.append("Diabetes Care Supplement")
-
-        if hypertension_risk > 0.5 or has_hypertension:
-            supplemental_recommendations.append("Cardiovascular Care Supplement")
-
-        if cvd_risk > 0.5 or has_heart_disease:
-            supplemental_recommendations.append("Critical Illness Coverage")
-
-        if age > 50:
-            supplemental_recommendations.append("Senior Care Supplement")
-
-        if len(supplemental_recommendations) == 0:
-            supplemental_recommendations.append("Wellness Rewards Program")
-
-        # Return recommendations
-        return {
-            "core_plan": core_recommendation,
-            "supplements": supplemental_recommendations,
-            "risk_level": overall_risk
+def main():
+    st.title("🩺 Health & Wellness Recommendation Engine")
+    st.write("This prototype demonstrates personalized health recommendations based on user health data.")
+    
+    # Initialize recommendation engine
+    if 'recommendation_engine' not in st.session_state:
+        with st.spinner("Initializing recommendation engine..."):
+            st.session_state.recommendation_engine = HealthRecommendationEngine()
+            st.success("Recommendation engine initialized successfully!")
+    
+    # Create tabs for different sections
+    tab1, tab2, tab3 = st.tabs(["User Input", "Data Explorer", "About"])
+    
+    with tab1:
+        st.header("Enter Your Health Profile")
+        
+        # Create columns for form layout
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Demographics")
+            age = st.slider("Age", 20, 70, 35)
+            gender = st.selectbox("Gender", ["Male", "Female"])
+            company = st.selectbox("Company", ["TechCorp", "HealthInc", "FinanceGlobal", "RetailMart", "EduSystems"])
+            team = st.selectbox("Team", ["Engineering", "HR", "Finance", "Marketing", "Operations", "Sales", "Product"])
+            
+        with col2:
+            st.subheader("Health Metrics")
+            height = st.number_input("Height (m)", 1.4, 2.1, 1.7, 0.01)
+            weight = st.number_input("Weight (kg)", 40.0, 150.0, 70.0, 0.1)
+            bmi = round(weight / (height ** 2), 1)
+            st.info(f"Calculated BMI: {bmi}")
+            
+            systolic_bp = st.slider("Systolic Blood Pressure", 90, 200, 120)
+            diastolic_bp = st.slider("Diastolic Blood Pressure", 50, 120, 80)
+            
+        st.subheader("Lifestyle & Health")
+        col3, col4 = st.columns(2)
+        
+        with col3:
+            smoking_score = st.selectbox("Smoking Status", 
+                                       [(0, "Non-smoker"), 
+                                        (1, "Occasional"), 
+                                        (3, "Regular"), 
+                                        (5, "Heavy")], format_func=lambda x: x[1])
+            smoking_score = smoking_score[0]
+            
+            sleep_hours = st.slider("Average Sleep (hours/night)", 3.0, 10.0, 7.0, 0.5)
+            diet_score = st.slider("Diet Quality (1-10)", 1, 10, 6)
+            exercise_days = st.slider("Exercise (days/week)", 0, 7, 3)
+            
+        with col4:
+            diagnosed_conditions = st.multiselect("Diagnosed Conditions", 
+                                                ["Hypertension", "Diabetes", "High Cholesterol"],
+                                                default=[])
+            
+            diagnosed_hypertension = "Hypertension" in diagnosed_conditions
+            diagnosed_diabetes = "Diabetes" in diagnosed_conditions
+            diagnosed_high_cholesterol = "High Cholesterol" in diagnosed_conditions
+            
+            cholesterol = st.slider("Total Cholesterol", 120, 300, 190)
+            glucose = st.slider("Fasting Glucose", 70, 250, 95)
+        
+        st.subheader("App Usage")
+        col5, col6 = st.columns(2)
+        
+        with col5:
+            avg_daily_steps = st.slider("Average Daily Steps", 1000, 20000, 7000, 500)
+            sleep_tracking = st.slider("Sleep Tracking (days/week)", 0, 7, 3)
+            water_tracking = st.slider("Water Tracking (days/week)", 0, 7, 2)
+            
+        with col6:
+            doctor_visits = st.slider("Doctor Visits (past 6 months)", 0, 5, 1)
+            challenges_joined = st.slider("Wellness Challenges Joined (past 6 months)", 0, 5, 1)
+            challenges_completed = st.slider("Wellness Challenges Completed (past 6 months)", 
+                                          0, max(challenges_joined, 1), min(1, challenges_joined))
+        
+        # Calculate risk scores (simplified for prototype - would be more sophisticated ML model in production)
+        # These are approximations based on the risk factors
+        diabetes_risk = 0.05 + (0.01 * (age - 30) / 10) + (0.02 * (bmi - 25) / 5) + (0.1 * diagnosed_diabetes) - (0.01 * exercise_days)
+        diabetes_risk = round(max(0.01, min(0.99, diabetes_risk + (glucose - 90) / 500)), 2)
+        
+        cvd_risk = 0.05 + (0.01 * (age - 30) / 10) + (0.01 * (systolic_bp - 120) / 10) + (0.01 * (cholesterol - 180) / 20) + (0.02 * smoking_score) - (0.01 * exercise_days)
+        cvd_risk = round(max(0.01, min(0.99, cvd_risk + (0.03 if gender == "Male" else 0))), 2)
+        
+        hypertension_risk = 0.05 + (0.01 * (age - 30) / 10) + (0.02 * (systolic_bp - 120) / 10) + (0.005 * (bmi - 25)) + (0.01 * smoking_score)
+        hypertension_risk = round(max(0.01, min(0.99, hypertension_risk)), 2)
+        
+        # Display risk scores
+        st.subheader("Calculated Risk Scores")
+        risk_col1, risk_col2, risk_col3 = st.columns(3)
+        
+        risk_col1.metric("Diabetes Risk", f"{diabetes_risk:.0%}")
+        risk_col2.metric("Cardiovascular Risk", f"{cvd_risk:.0%}")
+        risk_col3.metric("Hypertension Risk", f"{hypertension_risk:.0%}")
+        
+        # Create user profile dictionary
+        user_profile = {
+            'age': age,
+            'gender': gender,
+            'company': company,
+            'team': team,
+            'height_m': height,
+            'weight_kg': weight,
+            'bmi': bmi,
+            'systolic_bp': systolic_bp,
+            'diastolic_bp': diastolic_bp,
+            'smoking_score': smoking_score,
+            'sleep_hours': sleep_hours,
+            'diet_score': diet_score,
+            'exercise_days_per_week': exercise_days,
+            'diagnosed_hypertension': diagnosed_hypertension,
+            'diagnosed_diabetes': diagnosed_diabetes,
+            'diagnosed_high_cholesterol': diagnosed_high_cholesterol,
+            'cholesterol': cholesterol,
+            'glucose': glucose,
+            'diabetes_risk': diabetes_risk,
+            'cvd_risk': cvd_risk,
+            'hypertension_risk': hypertension_risk,
+            'avg_daily_steps': avg_daily_steps,
+            'sleep_tracking_days_per_week': sleep_tracking,
+            'water_tracking_days_per_week': water_tracking,
+            'doctor_visits_6mo': doctor_visits,
+            'challenges_joined_6mo': challenges_joined,
+            'challenges_completed_6mo': challenges_completed
         }
-
-    def recommend_lifestyle_activities(self, user_profile):
-        """
-        Recommend lifestyle activities and challenges based on health profile
-        """
-        print("Recommending lifestyle activities...")
-
-        # Extract key metrics
-        exercise_score = user_profile['exercise_score']
-        diet_score = user_profile['diet_score']
-        sleep_score = user_profile['sleep_score']
-        stress_score = user_profile['stress_score']
-        smoking_score = user_profile['smoking_score']
-
-        bmi = user_profile['bmi']
-        avg_steps = user_profile['avg_daily_steps']
-
-        # Determine activity focus areas
-        focus_areas = []
-        individual_recommendations = []
-        team_recommendations = []
-
-        # Exercise recommendations
-        if exercise_score <= 4:
-            focus_areas.append("exercise")
-            individual_recommendations.append("Start a daily walking routine")
-            team_recommendations.append("Join a step challenge with your team")
-        elif exercise_score <= 7:
-            individual_recommendations.append("Increase workout intensity or duration")
-            team_recommendations.append("Join a fitness class with colleagues")
-        else:
-            individual_recommendations.append("Maintain your excellent exercise routine")
-            team_recommendations.append("Lead a company fitness challenge")
-
-        # Diet recommendations
-        if diet_score <= 4:
-            focus_areas.append("nutrition")
-            individual_recommendations.append("Try meal prepping healthy lunches")
-            team_recommendations.append("Participate in a healthy recipe exchange")
-        elif diet_score <= 7:
-            individual_recommendations.append("Add more plant-based meals to your diet")
-            team_recommendations.append("Join a nutrition workshop with your team")
-        else:
-            individual_recommendations.append("Continue your healthy eating habits")
-            team_recommendations.append("Start a healthy potluck lunch tradition")
-
-        # Sleep recommendations
-        if sleep_score <= 4:
-            focus_areas.append("sleep")
-            individual_recommendations.append("Establish a consistent sleep schedule")
-            team_recommendations.append("Join a sleep improvement challenge")
-        elif sleep_score <= 7:
-            individual_recommendations.append("Try reducing screen time before bed")
-            team_recommendations.append("Join a stress management workshop")
-
-        # Stress management
-        if stress_score <= 4:
-            focus_areas.append("stress")
-            individual_recommendations.append("Practice daily mindfulness meditation")
-            team_recommendations.append("Join a workplace meditation group")
-        elif stress_score <= 7:
-            individual_recommendations.append("Schedule regular breaks during work")
-            team_recommendations.append("Sign up for a team yoga class")
-
-        # Smoking cessation
-        if smoking_score <= 5:
-            focus_areas.append("smoking")
-            individual_recommendations.append("Enroll in a smoking cessation program")
-            team_recommendations.append("Join a quit-smoking support group")
-
-        # Weight management
-        if bmi >= 30:
-            focus_areas.append("weight")
-            individual_recommendations.append("Set achievable weight management goals")
-            team_recommendations.append("Join a workplace weight management program")
-
-        # Step count
-        if avg_steps < 5000:
-            focus_areas.append("activity")
-            individual_recommendations.append("Aim to increase daily steps to 7,000")
-            team_recommendations.append("Join a step count challenge")
-
-        # Determine primary focus area
-        primary_focus = "general wellness"
-        if focus_areas:
-            # Choose the area with the lowest score
-            scores = {
-                "exercise": exercise_score,
-                "nutrition": diet_score,
-                "sleep": sleep_score,
-                "stress": stress_score,
-                "smoking": smoking_score,
-                "weight": (10 - min(10, max(1, (bmi - 18.5) / 3))),
-                "activity": min(10, max(1, avg_steps / 1000))
-            }
-
-            available_scores = {area: scores[area] for area in focus_areas if area in scores}
-            if available_scores:
-                primary_focus = min(available_scores, key=available_scores.get)
-
-        # Create final recommendations
-        return {
-            "primary_focus": primary_focus,
-            "individual_recommendations": individual_recommendations[:3],  # Top 3 recommendations
-            "team_recommendations": team_recommendations[:2]  # Top 2 recommendations
-        }
-
-    def predict_claim_probability(self, user_profile):
-        """
-        Predict the probability of a user making a medical claim
-        """
-        print("Predicting claim probability...")
-
-        # Remove user_id for prediction
-        features = user_profile.copy()
-        if 'user_id' in features:
-            user_id = features.pop('user_id')
-
-        # Convert to DataFrame for preprocessing
-        user_df = pd.DataFrame([features])
-
-        # Apply preprocessing
-        user_processed = self.preprocessor.transform(user_df)
-
-        # Make prediction
-        claim_model = self.models['claims']
-        claim_prob = claim_model.predict_proba(user_processed)[0, 1]  # Probability of class 1
-
-        # Return prediction
-        return {
-            "probability": round(claim_prob, 2),
-            "risk_level": "High" if claim_prob > 0.6 else "Medium" if claim_prob > 0.3 else "Low"
-        }
-
-    def explain_claim_factors(self, user_profile):
-        """
-        Explain factors contributing to claims prediction
-        """
-        # Get the decision tree model
-        claim_model = self.models['claims']
-
-        # Create a simplified explanation based on decision path
-        explanation = []
-
-        # Remove user_id for processing
-        features = user_profile.copy()
-        if 'user_id' in features:
-            user_id = features.pop('user_id')
-
-        # Convert to DataFrame for preprocessing
-        user_df = pd.DataFrame([features])
-
-        # Apply preprocessing
-        user_processed = self.preprocessor.transform(user_df)
-
-        # Get feature importances
-        importances = claim_model.feature_importances_
-
-        # Map importances to feature names
-        feature_importance = dict(zip(self.feature_names, importances))
-
-        # Sort by importance
-        sorted_importance = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)
-
-        # Return top 5 factors
-        top_factors = sorted_importance[:5]
-
-        explanation = [{"factor": factor, "importance": float(importance)}
-                       for factor, importance in top_factors]
-
-        return explanation
-
-    def generate_recommendations(self, user_profile):
-        """
-        Generate all recommendations for a user
-        """
-        print("Generating comprehensive recommendations...")
-
-        # Find digital twins
-        digital_twins = self.find_digital_twin(user_profile)
-
-        # Generate other recommendations
-        medical_recs = self.recommend_medical_steps(user_profile)
-        insurance_recs = self.recommend_insurance_products(user_profile)
-        lifestyle_recs = self.recommend_lifestyle_activities(user_profile)
-        claim_prediction = self.predict_claim_probability(user_profile)
-        claim_factors = self.explain_claim_factors(user_profile)
-
-        # Compile all recommendations
-        recommendations = {
-            "digital_twins": digital_twins,
-            "medical_recommendations": medical_recs,
-            "insurance_recommendations": insurance_recs,
-            "lifestyle_recommendations": lifestyle_recs,
-            "claim_prediction": claim_prediction,
-            "claim_factors": claim_factors
-        }
-
-        return recommendations
-
-# =============================================================================
-# STREAMLIT APP
-# =============================================================================
-
-def create_streamlit_app(engine, feature_df):
-    """
-    Create a Streamlit app for the health recommendation engine
-    """
-    st.title("Health & Wellness Recommendation Engine")
-    st.write("This prototype provides personalized health recommendations based on user profiles")
-
-    with st.expander("ℹ️ About this prototype", expanded=False):
+        
+        # Get recommendations button
+        if st.button("Generate Personalized Recommendations", type="primary"):
+            with st.spinner("Analyzing your health profile..."):
+                recommendations = st.session_state.recommendation_engine.get_all_recommendations(user_profile)
+                
+                st.success("Analysis complete! Here are your personalized recommendations:")
+                
+                # Display recommendations in three columns
+                rec_col1, rec_col2, rec_col3 = st.columns(3)
+                
+                with rec_col1:
+                    st.subheader("🏥 Medical Recommendation")
+                    med_rec = recommendations['medical_recommendation']
+                    st.markdown(f"**{med_rec['recommendation']}**")
+                    st.caption(f"Urgency: {med_rec['urgency']}")
+                    st.caption(f"Follow-up: {med_rec['followup_days']} days")
+                
+                with rec_col2:
+                    st.subheader("🛡️ Insurance Suggestion")
+                    ins_rec = recommendations['insurance_recommendation']
+                    st.markdown(f"**{ins_rec['name']}**")
+                    st.markdown(f"{ins_rec['coverage']}")
+                    st.caption(f"Best for: {ins_rec['best_for']}")
+                    st.caption(f"Monthly premium: {ins_rec['monthly_premium_range']}")
+                
+                with rec_col3:
+                    st.subheader("🏆 Wellness Challenge")
+                    life_rec = recommendations['lifestyle_recommendation']
+                    st.markdown(f"**{life_rec['name']}**")
+                    st.markdown(f"{life_rec['description']}")
+                    st.caption(f"Category: {life_rec['category']}")
+                    st.caption(f"Duration: {life_rec['duration_days']} days")
+                    st.caption(f"Difficulty: {life_rec['difficulty']}")
+                    st.caption(f"Team-based: {'Yes' if life_rec['team_based'] else 'No'}")
+                
+                # Detailed explanation
+                with st.expander("Why these recommendations?"):
+                    st.markdown("""
+                    ### Medical Recommendation Logic
+                    The medical recommendation is based on your vital signs, lab values, and risk scores.
+                    High blood pressure, elevated glucose, high cholesterol, or high BMI can trigger specific recommendations.
+                    
+                    ### Insurance Product Logic
+                    The insurance recommendation uses a machine learning model that considers your age, BMI, 
+                    blood pressure, diagnosed conditions, and risk scores to suggest the most appropriate coverage level.
+                    
+                    ### Wellness Challenge Logic
+                    The wellness challenge recommendation analyzes your current activity level, 
+                    app usage patterns, and historical challenge participation to suggest activities
+                    that you're likely to both benefit from and complete successfully.
+                    """)
+    
+    with tab2:
+        st.header("Data Explorer")
+        st.write("Explore the dummy data used to train the recommendation models.")
+        
+        data_type = st.selectbox("Select data to explore", 
+                                ["User Health Profiles", 
+                                 "Wellness Challenges", 
+                                 "Insurance Products", 
+                                 "Medical Recommendations"])
+        
+        if data_type == "User Health Profiles":
+            st.dataframe(st.session_state.recommendation_engine.user_data.head(20))
+            
+            st.subheader("Data Visualizations")
+            viz_col1, viz_col2 = st.columns(2)
+            
+            with viz_col1:
+                st.write("BMI Distribution")
+                fig, ax = plt.subplots()
+                sns.histplot(st.session_state.recommendation_engine.user_data['bmi'], kde=True, ax=ax)
+                ax.axvline(x=25, color='orange', linestyle='--', label='Overweight Threshold')
+                ax.axvline(x=30, color='red', linestyle='--', label='Obesity Threshold')
+                ax.set_xlabel('BMI')
+                ax.legend()
+                st.pyplot(fig)
+            
+            with viz_col2:
+                st.write("Blood Pressure Distribution")
+                fig, ax = plt.subplots()
+                sns.scatterplot(x='systolic_bp', y='diastolic_bp', 
+                              data=st.session_state.recommendation_engine.user_data, 
+                              alpha=0.5, ax=ax)
+                ax.axvline(x=140, color='red', linestyle='--', label='High Systolic Threshold')
+                ax.axhline(y=90, color='red', linestyle='--', label='High Diastolic Threshold')
+                ax.set_xlabel('Systolic BP')
+                ax.set_ylabel('Diastolic BP')
+                ax.legend()
+                st.pyplot(fig)
+            
+            viz_col3, viz_col4 = st.columns(2)
+            
+            with viz_col3:
+                st.write("Risk Scores by Age")
+                fig, ax = plt.subplots()
+                data = st.session_state.recommendation_engine.user_data
+                ax.scatter(data['age'], data['diabetes_risk'], alpha=0.3, label='Diabetes Risk')
+                ax.scatter(data['age'], data['cvd_risk'], alpha=0.3, label='CVD Risk')
+                ax.set_xlabel('Age')
+                ax.set_ylabel('Risk Score')
+                ax.legend()
+                st.pyplot(fig)
+            
+            with viz_col4:
+                st.write("Exercise vs. Steps")
+                fig, ax = plt.subplots()
+                sns.boxplot(x='exercise_days_per_week', y='avg_daily_steps', 
+                          data=st.session_state.recommendation_engine.user_data, ax=ax)
+                ax.set_xlabel('Exercise Days per Week')
+                ax.set_ylabel('Average Daily Steps')
+                st.pyplot(fig)
+                
+        elif data_type == "Wellness Challenges":
+            st.dataframe(st.session_state.recommendation_engine.challenges_data)
+            
+            # Visualize challenge types
+            st.subheader("Challenge Categories")
+            fig, ax = plt.subplots()
+            category_counts = st.session_state.recommendation_engine.challenges_data['category'].value_counts()
+            category_counts.plot(kind='bar', ax=ax)
+            ax.set_xlabel('Category')
+            ax.set_ylabel('Count')
+            st.pyplot(fig)
+            
+        elif data_type == "Insurance Products":
+            st.dataframe(st.session_state.recommendation_engine.insurance_products)
+            
+        elif data_type == "Medical Recommendations":
+            st.dataframe(st.session_state.recommendation_engine.medical_recommendations)
+    
+    with tab3:
+        st.header("About This Prototype")
         st.markdown("""
-        This prototype demonstrates a modular health recommendation engine that provides:
-        * **Digital Twin**: Finding similar users based on health profiles
-        * **Medical Recommendations**: Suggested next steps for healthcare
-        * **Insurance Recommendations**: Personalized coverage suggestions
-        * **Lifestyle Recommendations**: Individual and team wellness activities
-        * **Claims Prediction**: Likelihood of future medical claims
-
-        Enter your information in the form below to get personalized recommendations.
+        ### Architecture Overview
+        
+        This prototype demonstrates a hybrid recommendation engine that combines:
+        
+        1. **Rules-based logic** for medical recommendations based on clinical guidelines
+        2. **Machine learning models** for lifestyle challenges and insurance product recommendations
+        
+        The system workflow:
+        
+        ```
+        User Profile Input → Risk Assessment → Multi-domain Recommendations
+        ```
+        
+        ### Components
+        
+        - **Data Generation**: Creates realistic synthetic health profiles for training
+        - **Feature Engineering**: Extracts relevant features from user profiles
+        - **Recommendation Logic**: Combines rules and ML to generate personalized recommendations
+        - **Streamlit UI**: Simple interface for profile input and recommendation display
+        
+        ### Data Sources (Simulated)
+        
+        - Demographics and basic health data
+        - Health risk assessment scores
+        - Medical history and diagnoses
+        - Wellness activity and engagement
+        
+        ### Limitations & Next Steps
+        
+        This is a prototype with synthetic data. In a production environment, you would:
+        
+        1. Use real, anonymized user data (with proper consent)
+        2. Implement more sophisticated ML models
+        3. Add recommendation explanations and evidence
+        4. Integrate with actual medical guidelines and insurance products
+        5. Implement HIPAA compliance and data security
+        6. Add CI/CD pipeline for model updates
         """)
+        
+        with st.expander("Technical Implementation Notes"):
+            st.markdown("""
+            ### Model Selection
+            
+            For this prototype:
+            
+            - **Decision Tree** for lifestyle recommendations: Easily interpretable and works well with limited data
+            - **Random Forest** for insurance recommendations: Better handles complex relationships
+            
+            In production, consider:
+            
+            - **Gradient Boosting** for improved accuracy
+            - **Collaborative Filtering** for more personalized recommendations
+            - **Deep Learning** for complex pattern recognition
+            
+            ### Scaling Considerations
+            
+            - Move model training offline
+            - Implement model versioning
+            - Add A/B testing framework
+            - Develop feedback loops to improve recommendations
+            """)
 
-    # Sidebar for user input
-    st.sidebar.header("User Profile")
-
-    # Demographics
-    st.sidebar.subheader("Demographics")
-    age = st.sidebar.slider("Age", 22, 65, 40)
-    gender = st.sidebar.selectbox("Gender", ["M", "F", "Other"])
-    company = st.sidebar.selectbox("Company",
-                              ["TechCorp", "HealthNet", "FinGroup", "RetailGiant", "EduSystems"])
-
-    # Team selection based on company
-    teams_by_company = {
-        'TechCorp': ['Engineering', 'Design', 'Product', 'Support', 'Sales'],
-        'HealthNet': ['Nursing', 'Administration', 'Research', 'Operations', 'IT'],
-        'FinGroup': ['Investment', 'Analysis', 'Compliance', 'HR', 'Tech'],
-        'RetailGiant': ['Logistics', 'Marketing', 'Store Ops', 'Digital', 'Support'],
-        'EduSystems': ['Faculty', 'Administration', 'IT', 'Research', 'Student Services']
-    }
-    team = st.sidebar.selectbox("Team", teams_by_company[company])
-
-    # Health metrics
-    st.sidebar.subheader("Health Metrics")
-
-    # BMI and BP
-    bmi = st.sidebar.slider("BMI", 16.0, 40.0, 25.0, 0.1)
-    systolic_bp = st.sidebar.slider("Systolic BP (mmHg)", 90, 180, 120, 1)
-    diastolic_bp = st.sidebar.slider("Diastolic BP (mmHg)", 60, 110, 80, 1)
-
-    # Lab values
-    glucose_level = st.sidebar.slider("Blood Glucose (mg/dL)", 70, 180, 95, 1)
-    cholesterol_level = st.sidebar.slider("Total Cholesterol (mg/dL)", 130, 300, 190, 1)
-
-    # Lifestyle scores (1-10 where higher is better)
-    st.sidebar.subheader("Lifestyle Factors (1-10 scale, higher is better)")
-    smoking_score = st.sidebar.slider("Smoking Habits", 1, 10, 8,
-                                 help="1=Heavy smoker, 10=Non-smoker")
-    sleep_score = st.sidebar.slider("Sleep Quality", 1, 10, 6,
-                               help="1=Poor sleep, 10=Excellent sleep")
-    diet_score = st.sidebar.slider("Diet Quality", 1, 10, 6,
-                              help="1=Poor diet, 10=Excellent diet")
-    exercise_score = st.sidebar.slider("Exercise Habits", 1, 10, 5,
-                                  help="1=Sedentary, 10=Very active")
-    stress_score = st.sidebar.slider("Stress Management", 1, 10, 6,
-                                help="1=Highly stressed, 10=Well managed")
-
-    # App usage metrics
-    st.sidebar.subheader("Activity Metrics")
-    avg_daily_steps = st.sidebar.slider("Avg. Daily Steps", 1000, 15000, 7000, 500)
-    avg_sleep_hours = st.sidebar.slider("Avg. Sleep (hours)", 4.0, 10.0, 7.0, 0.1)
-    avg_water_intake = st.sidebar.slider("Avg. Water Intake (cups)", 1.0, 12.0, 6.0, 0.5)
-
-    # Medical history
-    st.sidebar.subheader("Medical History")
-    diagnoses = st.sidebar.multiselect("Current Diagnoses",
-                                  ["Hypertension", "Diabetes", "High Cholesterol",
-                                   "Obesity", "Anxiety", "Depression",
-                                   "Sleep Disorder", "Heart Disease"])
-
-    medications = st.sidebar.multiselect("Current Medications",
-                                    ["Blood Pressure Medication",
-                                     "Diabetes Medication",
-                                     "Cholesterol Medication",
-                                     "Anxiety/Depression Medication"])
-
-    # App activity
-    app_login_frequency = st.sidebar.select_slider("App Usage Frequency",
-                                              options=["Rarely", "Monthly", "Weekly", "Daily"])
-    challenges_completed = st.sidebar.slider("Wellness Challenges Completed (6 mo)", 0, 10, 2)
-    preferred_challenge = st.sidebar.selectbox("Preferred Challenge Type",
-                                          ["Steps", "Nutrition", "Mindfulness", "Sleep", "Hydration"])
-
-    doctor_visits_6mo = st.sidebar.slider("Doctor Visits (6 mo)", 0, 10, 1)
-    pharmacy_orders_6mo = st.sidebar.slider("Pharmacy Orders (6 mo)", 0, 10, 2)
-
-    # Health risk predictions
-    diabetes_risk = round((1 if "Diabetes" in diagnoses else 0) * 0.3 +
-                     (glucose_level > 100) * 0.3 +
-                     (bmi > 30) * 0.2 +
-                     (age > 45) * 0.15 +
-                     random.uniform(-0.05, 0.05), 2)
-    diabetes_risk = max(0.01, min(0.99, diabetes_risk))
-
-    hypertension_risk = round((1 if "Hypertension" in diagnoses else 0) * 0.3 +
-                         (systolic_bp > 130) * 0.2 +
-                         (diastolic_bp > 85) * 0.2 +
-                         (bmi > 28) * 0.1 +
-                         (age > 50) * 0.1 +
-                         (smoking_score < 6) * 0.1 +
-                         random.uniform(-0.05, 0.05), 2)
-    hypertension_risk = max(0.01, min(0.99, hypertension_risk))
-
-    cvd_risk = round((1 if "Heart Disease" in diagnoses else 0) * 0.3 +
-                (1 if "Hypertension" in diagnoses else 0) * 0.15 +
-                (age > 55) * 0.15 +
-                (smoking_score < 5) * 0.15 +
-                (cholesterol_level > 220) * 0.15 +
-                (systolic_bp > 140) * 0.15 +
-                random.uniform(-0.05, 0.05), 2)
-    cvd_risk = max(0.01, min(0.99, cvd_risk))
-
-    # Create user profile dictionary
-    user_profile = {
-        'user_id': 'new_user',
-        'age': age,
-        'gender': gender,
-        'company': company,
-        'team': team,
-        'bmi': bmi,
-        'systolic_bp': systolic_bp,
-        'diastolic_bp': diastolic_bp,
-        'glucose_level': glucose_level,
-        'cholesterol_level': cholesterol_level,
-        'smoking_score': smoking_score,
-        'sleep_score': sleep_score,
-        'diet_score': diet_score,
-        'exercise_score': exercise_score,
-        'stress_score': stress_score,
-        'avg_daily_steps': avg_daily_steps,
-        'avg_sleep_hours': avg_sleep_hours,
-        'avg_water_intake': avg_water_intake,
-        'doctor_visits_6mo': doctor_visits_6mo,
-        'pharmacy_orders_6mo': pharmacy_orders_6mo,
-        'challenges_completed': challenges_completed,
-        'app_login_frequency': app_login_frequency,
-        'preferred_challenge': preferred_challenge,
-        'diabetes_risk': diabetes_risk,
-        'hypertension_risk': hypertension_risk,
-        'cvd_risk': cvd_risk
-    }
-
-    # Add diagnosis flags
-    for condition in ["Hypertension", "Diabetes", "High Cholesterol",
-                      "Obesity", "Anxiety", "Depression",
-                      "Sleep Disorder", "Heart Disease"]:
-        condition_key = f'has_{condition.lower().replace(" ", "_")}'
-        user_profile[condition_key] = 1 if condition in diagnoses else 0
-
-    # Add medication flags
-    user_profile['on_bp_medication'] = 1 if "Blood Pressure Medication" in medications else 0
-    user_profile['on_diabetes_medication'] = 1 if "Diabetes Medication" in medications else 0
-    user_profile['on_cholesterol_medication'] = 1 if "Cholesterol Medication" in medications else 0
-    user_profile['on_anxiety_depression_medication'] = 1 if "Anxiety/Depression Medication" in medications else 0
-
-    # Generate recommendations button
-    if st.sidebar.button("Generate Recommendations", type="primary"):
-        with st.spinner("Analyzing health profile and generating recommendations..."):
-            # Generate all recommendations
-            recommendations = engine.generate_recommendations(user_profile)
-
-            # Display recommendations
-            st.header("Your Personalized Health Recommendations")
-
-            # Create tabs for different recommendation types
-            tab1, tab2, tab3, tab4, tab5 = st.tabs([
-                "Medical Recommendations",
-                "Lifestyle Suggestions",
-                "Insurance Options",
-                "Digital Twin",
-                "Claims Prediction"
-            ])
-
-            # Tab 1: Medical Recommendations
-            with tab1:
-                st.subheader("Medical Recommendations")
-
-                # Display urgency
-                urgency = recommendations['medical_recommendations']['urgency']
-                if urgency == "Immediate":
-                    st.error(f"Urgency: {urgency}")
-                elif urgency == "Urgent":
-                    st.warning(f"Urgency: {urgency}")
-                elif urgency == "Soon":
-                    st.info(f"Urgency: {urgency}")
-                else:
-                    st.success(f"Urgency: {urgency}")
-
-                # Display medical recommendations
-                for i, rec in enumerate(recommendations['medical_recommendations']['recommendations']):
-                    st.write(f"**{i+1}.** {rec}")
-
-            # Tab 2: Lifestyle Recommendations
-            with tab2:
-                st.subheader("Lifestyle Recommendations")
-
-                lifestyle_recs = recommendations['lifestyle_recommendations']
-                st.write(f"**Primary Focus Area:** {lifestyle_recs['primary_focus'].title()}")
-
-                st.write("**Individual Activities:**")
-                for i, rec in enumerate(lifestyle_recs['individual_recommendations']):
-                    st.write(f"- {rec}")
-
-                st.write("**Team Activities:**")
-                for i, rec in enumerate(lifestyle_recs['team_recommendations']):
-                    st.write(f"- {rec}")
-
-            # Tab 3: Insurance Recommendations
-            with tab3:
-                st.subheader("Insurance Recommendations")
-
-                insurance_recs = recommendations['insurance_recommendations']
-
-                # Display risk level with color
-                risk_level = insurance_recs['risk_level']
-                if risk_level > 0.7:
-                    st.error(f"Risk Level: High ({risk_level:.2f})")
-                elif risk_level > 0.4:
-                    st.warning(f"Risk Level: Medium ({risk_level:.2f})")
-                else:
-                    st.success(f"Risk Level: Low ({risk_level:.2f})")
-
-                st.write(f"**Recommended Core Plan:** {insurance_recs['core_plan']}")
-
-                st.write("**Recommended Supplements:**")
-                for supp in insurance_recs['supplements']:
-                    st.write(f"- {supp}")
-
-            # Tab 4: Digital Twin
-            with tab4:
-                st.subheader("Your Digital Twin")
-                st.write("Users with similar health profiles to yours:")
-
-                # Display digital twins
-                for i, twin in enumerate(recommendations['digital_twins'][:3]):
-                    st.metric(f"Match {i+1}",
-                          f"User {twin['user_id']}",
-                          f"{twin['similarity']:.2%} Similar")
-
-                # Visualize similarity
-                st.write("**Similarity Visualization:**")
-
-                # Get data for the twins
-                twin_ids = [twin['user_id'] for twin in recommendations['digital_twins'][:3]]
-                twin_data = feature_df[feature_df['user_id'].isin(twin_ids)]
-
-                # Add current user
-                user_df = pd.DataFrame([user_profile])
-                viz_data = pd.concat([user_df, twin_data], ignore_index=True)
-
-                                # Normalize data for radar chart
-                numeric_cols = ['bmi', 'systolic_bp', 'diastolic_bp', 'glucose_level',
-                                'cholesterol_level', 'smoking_score', 'sleep_score',
-                                'diet_score', 'exercise_score', 'stress_score']
-                viz_data_norm = viz_data.copy()
-                for col in numeric_cols:
-                    min_val = feature_df[col].min()
-                    max_val = feature_df[col].max()
-                    viz_data_norm[col] = (viz_data[col] - min_val) / (max_val - min_val)
-
-                # Plot radar chart using Plotly
-                import plotly.express as px
-                import plotly.graph_objects as go
-
-                categories = numeric_cols
-                fig = go.Figure()
-
-                for i, row in viz_data_norm.iterrows():
-                    name = "You" if row['user_id'] == 'new_user' else row['user_id']
-                    fig.add_trace(go.Scatterpolar(
-                        r=row[categories].values,
-                        theta=categories,
-                        fill='toself',
-                        name=name
-                    ))
-
-                fig.update_layout(
-                    polar=dict(
-                        radialaxis=dict(visible=True, range=[0, 1])
-                    ),
-                    showlegend=True
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-            # Tab 5: Claims Prediction
-            with tab5:
-                st.subheader("Predicted Claims Risk")
-                claims_risk = recommendations['claims_prediction']['claim_probability']
-                st.write(f"**Estimated Claims Probability (next 6 months):** {claims_risk:.2%}")
-                if claims_risk > 0.7:
-                    st.error("High likelihood of medical claims. Consider preventive actions.")
-                elif claims_risk > 0.4:
-                    st.warning("Moderate risk. Keep up healthy habits.")
-                else:
-                    st.success("Low risk of medical claims.")
+# Run the Streamlit app
+if __name__ == "__main__":
+    main()
