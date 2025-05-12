@@ -4,6 +4,8 @@
 # A modular health recommendation engine that combines rules-based logic,
 # similarity matching, and ML-based recommendations.
 """
+import streamlit as st
+st.write("🚀 App started")  # Helps confirm Streamlit is rendering anything at all
 
 # Standard libraries
 import numpy as np
