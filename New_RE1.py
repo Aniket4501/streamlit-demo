@@ -4,6 +4,21 @@ import datetime
 import time  # Add this line
 # Set page config
 st.set_page_config(page_title="Health & Wellness Recommendation Engine", layout="wide")
+# Custom CSS to style dropdown text 
+st.markdown("""
+<style>
+/* Style for dropdown/select box text */
+.stSelectbox label, .stMultiSelect label {
+    color: #000000 !important;
+    font-weight: bold !important;
+}
+
+/* Style for dropdown/select box options */
+.stSelectbox div[data-baseweb="select"] span {
+    color: #000000 !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # Custom CSS to make text black
 st.markdown("""
