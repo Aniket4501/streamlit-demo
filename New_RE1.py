@@ -1,10 +1,18 @@
 import streamlit as st
 import pandas as pd
 import datetime
-
+import time  # Add this line
 # Set page config
 st.set_page_config(page_title="Health & Wellness Recommendation Engine", layout="wide")
 
+# Custom CSS to make text black
+st.markdown("""
+<style>
+body, p, h1, h2, h3, h4, h5, h6, .stMarkdown, .stText, div, span, li {
+    color: #000000 !important;
+}
+</style>
+""", unsafe_allow_html=True)
 # Custom CSS to make background white
 st.markdown("""
 <style>
