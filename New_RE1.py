@@ -4,6 +4,34 @@ import datetime
 import time  # Add this line
 # Set page config
 st.set_page_config(page_title="Health & Wellness Recommendation Engine", layout="wide")
+
+# Custom CSS to style dropdown selectors
+st.markdown("""
+<style>
+/* Make label text darker and bolder */
+.stSelectbox label, .stMultiSelect label {
+    color: #000000 !important;
+    font-weight: bold !important;
+}
+
+/* Target the dropdown text */
+.stSelectbox div[data-baseweb="select"] > div {
+    color: #000000 !important;
+    background-color: #f0f2f6 !important;
+    border: 1px solid #cccccc !important;
+}
+
+/* Style the dropdown options */
+.stSelectbox div[role="listbox"] div[role="option"] {
+    color: #000000 !important;
+}
+
+/* Add a slight shadow for better visibility */
+.stSelectbox div[data-baseweb="select"] {
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1) !important;
+}
+</style>
+""", unsafe_allow_html=True)
 # Custom CSS to style dropdown text 
 st.markdown("""
 <style>
